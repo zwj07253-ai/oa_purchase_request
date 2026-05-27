@@ -1,7 +1,9 @@
 import frappe
+from frappe import scrub
 
 DOCTYPE = "OA Purchase Request"
 MODULE = "Buying"
+CLIENT_SCRIPT_NAME = "OA Purchase Request Hide Empty Fields"
 
 CHILD_DOCTYPES = {
 	"OA Purchase Request Item": [
@@ -208,6 +210,7 @@ def create_or_update_oa_purchase_request():
 
 	doc.save(ignore_permissions=True)
 	backfill_existing_child_tables()
+	create_or_update_client_script()
 	frappe.db.commit()
 	frappe.clear_cache(doctype=DOCTYPE)
 
@@ -266,3 +269,31 @@ def backfill_existing_child_tables():
 
 		if after_counts != before_counts:
 			doc.save(ignore_permissions=True)
+
+
+def create_or_update_client_script():
+	script = get_form_script()
+	if not script:
+		return
+
+	if frappe.db.exists("Client Script", CLIENT_SCRIPT_NAME):
+		doc = frappe.get_doc("Client Script", CLIENT_SCRIPT_NAME)
+	else:
+		doc = frappe.new_doc("Client Script")
+		doc.name = CLIENT_SCRIPT_NAME
+
+	doc.dt = DOCTYPE
+	doc.enabled = 1
+	doc.script = script
+	doc.save(ignore_permissions=True)
+
+
+def get_form_script():
+	app_path = frappe.get_app_path("oa_purchase_request")
+	script_path = f"{app_path}/public/js/{scrub(DOCTYPE)}.js"
+
+	try:
+		with open(script_path) as file:
+			return file.read()
+	except OSError:
+		return None
