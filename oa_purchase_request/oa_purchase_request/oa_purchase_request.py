@@ -341,7 +341,7 @@ def attach_candidate(doc, attachment):
 		return
 
 	file_doc = save_file(filename, content, doc.doctype, doc.name, is_private=0)
-	if source_url:
+	if source_url and has_file_source_url_field():
 		file_doc.source_url = source_url
 		file_doc.save(ignore_permissions=True)
 
@@ -503,6 +503,9 @@ def file_exists(doc, filename):
 
 
 def file_exists_by_source_url(doc, source_url):
+	if not has_file_source_url_field():
+		return False
+
 	return cint(
 		frappe.db.count(
 			"File",
@@ -513,6 +516,10 @@ def file_exists_by_source_url(doc, source_url):
 			},
 		)
 	)
+
+
+def has_file_source_url_field():
+	return frappe.db.has_column("File", "source_url")
 
 
 def make_existing_attachments_public():
