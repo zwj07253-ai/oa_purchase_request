@@ -106,6 +106,8 @@ def normalize_child_tables(doc, method=None):
 	if not doc.get("payments"):
 		append_payment_from_flat_fields(doc)
 
+	remove_empty_child_rows(doc)
+
 
 def sync_attachments(doc, method=None):
 	for attachment in extract_attachment_candidates(doc):
@@ -594,7 +596,7 @@ def append_processor_from_flat_fields(doc):
 	add_number_if_present(row, "unit_price", doc.get("processor_unit_price"))
 	add_number_if_present(row, "amount", doc.get("processor_total_amount"))
 
-	if has_value(row):
+	if has_meaningful_row_value(row):
 		doc.append("processors", row)
 
 
@@ -607,10 +609,64 @@ def append_payment_from_flat_fields(doc):
 	}
 	add_number_if_present(row, "amount", doc.get("payment_amount"))
 
-	if has_value(row):
+	if has_meaningful_row_value(row):
 		doc.append("payments", row)
 
 
 def add_number_if_present(row, fieldname, value):
 	if value not in (None, ""):
 		row[fieldname] = flt(value)
+
+
+def has_meaningful_row_value(row):
+	for value in row.values():
+		if value in (None, ""):
+			continue
+		if isinstance(value, int | float) and flt(value) == 0:
+			continue
+		return True
+
+	return False
+
+
+def remove_empty_child_rows(doc):
+	for table_field in ("items", "processors", "payments"):
+		doc.set(table_field, [row for row in doc.get(table_field) if child_row_has_value(row)])
+
+
+def child_row_has_value(row):
+	ignored_fields = {
+		"creation",
+		"docstatus",
+		"doctype",
+		"idx",
+		"modified",
+		"modified_by",
+		"name",
+		"owner",
+		"parent",
+		"parentfield",
+		"parenttype",
+	}
+
+	for fieldname, value in row.as_dict().items():
+		if fieldname in ignored_fields or value in (None, ""):
+			continue
+		if isinstance(value, int | float) and flt(value) == 0:
+			continue
+		return True
+
+	return False
+
+
+def cleanup_existing_child_tables():
+	for row in frappe.get_all("OA Purchase Request", fields=["name"]):
+		doc = frappe.get_doc("OA Purchase Request", row.name)
+		before_counts = (len(doc.get("items") or []), len(doc.get("processors") or []), len(doc.get("payments") or []))
+		remove_empty_child_rows(doc)
+		after_counts = (len(doc.get("items") or []), len(doc.get("processors") or []), len(doc.get("payments") or []))
+
+		if after_counts != before_counts:
+			doc.save(ignore_permissions=True)
+
+	frappe.db.commit()
