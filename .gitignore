@@ -1,0 +1,9 @@
+*.pyc
+*.egg-info/
+__pycache__/
+.agents/
+.bench/
+.codex/
+.idea/
+.vscode/
+.DS_Store
