@@ -4,6 +4,7 @@ from frappe import scrub
 DOCTYPE = "OA Purchase Request"
 MODULE = "Buying"
 CLIENT_SCRIPT_NAME = "OA Purchase Request Hide Empty Fields"
+LIST_CLIENT_SCRIPT_NAME = "OA Purchase Request Time Filters"
 
 CHILD_DOCTYPES = {
 	"OA Purchase Request Item": [
@@ -101,6 +102,7 @@ FIELDS = [
 	("Raw Payload", "raw_payload", "Code", None),
 	("Sync Status", "sync_status", "Select", "Pending Purchase Order\nPurchase Order Created\nFailed"),
 	("Purchase Order", "purchase_order", "Link", "Purchase Order"),
+	("OA Logistics Code", "oa_logistics_code", "Data", None),
 	("Error Message", "error_message", "Small Text", None),
 ]
 
@@ -109,8 +111,16 @@ FIELDNAMES_TO_UPDATE = {
 	"created_time",
 	"items",
 	"payments",
+	"oa_logistics_code",
+	"purchase_order",
 	"processors",
+	"sync_status",
 	"updated_time",
+}
+
+LIST_VIEW_FIELDS = {
+	"purchase_order",
+	"oa_logistics_code",
 }
 
 HIDDEN_LEGACY_FIELDS = {
@@ -194,6 +204,8 @@ def create_or_update_oa_purchase_request():
 				field.options = options
 			if fieldname in HIDDEN_LEGACY_FIELDS:
 				fields_by_name[fieldname].hidden = 1
+			if fieldname in LIST_VIEW_FIELDS:
+				fields_by_name[fieldname].in_list_view = 1
 			continue
 
 		field = {
@@ -205,12 +217,15 @@ def create_or_update_oa_purchase_request():
 			field["options"] = options
 		if fieldname in HIDDEN_LEGACY_FIELDS:
 			field["hidden"] = 1
+		if fieldname in LIST_VIEW_FIELDS:
+			field["in_list_view"] = 1
 
 		doc.append("fields", field)
 
 	doc.save(ignore_permissions=True)
 	backfill_existing_child_tables()
 	create_or_update_client_script()
+	create_or_update_list_client_script()
 	frappe.db.commit()
 	frappe.clear_cache(doctype=DOCTYPE)
 
@@ -284,6 +299,25 @@ def create_or_update_client_script():
 
 	doc.dt = DOCTYPE
 	doc.enabled = 1
+	doc.view = "Form"
+	doc.script = script
+	doc.save(ignore_permissions=True)
+
+
+def create_or_update_list_client_script():
+	script = get_list_script()
+	if not script:
+		return
+
+	if frappe.db.exists("Client Script", LIST_CLIENT_SCRIPT_NAME):
+		doc = frappe.get_doc("Client Script", LIST_CLIENT_SCRIPT_NAME)
+	else:
+		doc = frappe.new_doc("Client Script")
+		doc.name = LIST_CLIENT_SCRIPT_NAME
+
+	doc.dt = DOCTYPE
+	doc.enabled = 1
+	doc.view = "List"
 	doc.script = script
 	doc.save(ignore_permissions=True)
 
@@ -291,6 +325,17 @@ def create_or_update_client_script():
 def get_form_script():
 	app_path = frappe.get_app_path("oa_purchase_request")
 	script_path = f"{app_path}/public/js/{scrub(DOCTYPE)}.js"
+
+	try:
+		with open(script_path) as file:
+			return file.read()
+	except OSError:
+		return None
+
+
+def get_list_script():
+	app_path = frappe.get_app_path("oa_purchase_request")
+	script_path = f"{app_path}/public/js/{scrub(DOCTYPE)}_list.js"
 
 	try:
 		with open(script_path) as file:

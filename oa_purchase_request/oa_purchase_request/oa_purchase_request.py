@@ -1,15 +1,20 @@
 import json
 import mimetypes
+import os
 import re
+import subprocess
 from base64 import b64decode
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import requests
 import frappe
 from frappe.utils.data import cint
 from frappe.utils.file_manager import save_file
-from frappe.utils import flt
+from frappe.utils import flt, getdate, nowdate
 
+
+DEFAULT_PURCHASE_WAREHOUSE = "采购 - YC"
+OA_LOGISTICS_PROCESS_CODE = "PROC-RIYJTXWV-CN52YRK70C5499JG0TJ03-3GSSHZQJ-5"
 
 ITEM_ALIASES = {
 	"item_name": ["item_name", "物品名称", "物料名称", "名称", "name"],
@@ -150,6 +155,274 @@ def inspect_attachment_payload(docname):
 	for fieldname in ("attachments_json", "raw_payload"):
 		collect_attachment_debug_rows(parse_json_value(doc.get(fieldname)), rows, fieldname)
 	return rows[:200]
+
+
+@frappe.whitelist()
+def get_oa_logistics_dingtalk_url(oa_logistics_code):
+	oa_logistics_code = (oa_logistics_code or "").strip()
+	if not oa_logistics_code:
+		frappe.throw("缺少 OA Logistics Code")
+
+	rows = find_oa_logistics_approval_rows(oa_logistics_code)
+	if not rows:
+		frappe.throw(f"未找到 OA Logistics Code 对应的国际物流审批：{oa_logistics_code}")
+
+	process_instance_id = rows[0].process_instance_id
+	if not process_instance_id:
+		frappe.throw(f"国际物流审批缺少 process_instance_id：{oa_logistics_code}")
+
+	return {"dingtalk_url": get_dingtalk_approval_url(process_instance_id)}
+
+
+def find_oa_logistics_approval_rows(oa_logistics_code):
+	return find_oa_logistics_approval_rows_from_postgres(oa_logistics_code)
+
+
+def find_oa_logistics_approval_rows_from_postgres(oa_logistics_code):
+	host = frappe.conf.get("oa_mapping_pg_host")
+	user = frappe.conf.get("oa_mapping_pg_user")
+	if not host or not user:
+		return []
+
+	database = frappe.conf.get("oa_mapping_pg_database") or "Depart_Employ"
+	port = str(frappe.conf.get("oa_mapping_pg_port") or 5432)
+	schema = frappe.conf.get("oa_mapping_pg_schema") or "public"
+	table = frappe.conf.get("oa_mapping_pg_table") or "oa_mapping"
+	password = frappe.conf.get("oa_mapping_pg_password")
+	query = f"""
+		select oa_code, instance_id
+		from {quote_pg_identifier(schema)}.{quote_pg_identifier(table)}
+		where process_code = '{escape_pg_literal(OA_LOGISTICS_PROCESS_CODE)}'
+			and oa_code = '{escape_pg_literal(oa_logistics_code)}'
+		order by update_time desc
+		limit 1
+	"""
+	env = os.environ.copy()
+	if password:
+		env["PGPASSWORD"] = password
+
+	try:
+		result = subprocess.run(
+			[
+				"psql",
+				"--tuples-only",
+				"--no-align",
+				"--field-separator",
+				"\t",
+				"--host",
+				host,
+				"--port",
+				port,
+				"--username",
+				user,
+				"--dbname",
+				database,
+				"--command",
+				query,
+			],
+			env=env,
+			check=False,
+			capture_output=True,
+			text=True,
+			timeout=10,
+		)
+	except Exception:
+		return []
+
+	if result.returncode != 0:
+		frappe.log_error(
+			title="OA logistics PostgreSQL lookup failed",
+			message=result.stderr or result.stdout,
+		)
+		return []
+
+	line = (result.stdout or "").strip().splitlines()
+	if not line:
+		return []
+
+	oa_code, instance_id = (line[0].split("\t", 1) + [""])[:2]
+	if not instance_id:
+		return []
+	return [frappe._dict({"name": oa_code, "process_instance_id": instance_id})]
+
+
+def quote_pg_identifier(value):
+	return '"' + str(value).replace('"', '""') + '"'
+
+
+def escape_pg_literal(value):
+	return str(value).replace("'", "''")
+
+
+def get_dingtalk_approval_url(process_instance_id):
+	safe_mobile_url = (
+		"https://aflow.dingtalk.com/dingtalk/mobile/homepage.htm"
+		f"?showmenu=false&dd_progress=false#/approval?procInstId={process_instance_id}"
+	)
+	return (
+		"dingtalk://dingtalkclient/page/link?"
+		f"url={quote(safe_mobile_url, safe='')}&pc_slide=true"
+	)
+
+
+@frappe.whitelist()
+def create_purchase_order(docname, supplier_name, oa_logistics_item_code=None, oa_logistics_amount=None):
+	doc = frappe.get_doc("OA Purchase Request", docname)
+	doc.check_permission("read")
+
+	supplier_name = (supplier_name or "").strip()
+	oa_logistics_item_code = (oa_logistics_item_code or "").strip()
+	oa_logistics_amount = "" if oa_logistics_amount in (None, "") else oa_logistics_amount
+	if not supplier_name:
+		frappe.throw("请填写供应商")
+
+	if doc.get("purchase_order") and frappe.db.exists("Purchase Order", doc.purchase_order):
+		frappe.throw(f"已生成采购订单：{doc.purchase_order}")
+
+	if not frappe.db.exists("Warehouse", DEFAULT_PURCHASE_WAREHOUSE):
+		frappe.throw(f"默认仓库不存在：{DEFAULT_PURCHASE_WAREHOUSE}")
+
+	if not doc.get("items"):
+		normalize_child_tables(doc)
+
+	if not doc.get("items"):
+		frappe.throw("没有可生成采购订单的需求明细")
+
+	supplier = get_or_create_supplier(supplier_name)
+	company = frappe.defaults.get_user_default("Company") or frappe.db.get_default("company")
+	if not company:
+		frappe.throw("未找到默认公司，无法生成采购订单")
+
+	schedule_date = get_purchase_order_schedule_date(doc)
+	purchase_order = frappe.new_doc("Purchase Order")
+	purchase_order.supplier = supplier
+	purchase_order.company = company
+	purchase_order.transaction_date = nowdate()
+	purchase_order.schedule_date = schedule_date
+	purchase_order.set_warehouse = DEFAULT_PURCHASE_WAREHOUSE
+	purchase_order.custom_oa_purchase_expense = doc.name
+	purchase_order.custom_oa_logistics_code = oa_logistics_item_code
+	purchase_order.custom_logistics_cost = oa_logistics_amount
+
+	for row in doc.get("items"):
+		if not has_meaningful_item_row(row):
+			continue
+
+		item_code = get_or_create_item(row)
+		qty = flt(row.get("qty")) or 1
+		amount = flt(row.get("amount"))
+		rate = amount / qty if amount else 0
+		description = row.get("specification") or row.get("item_name") or item_code
+		uom = get_item_uom(item_code, row.get("uom"))
+
+		purchase_order.append(
+			"items",
+			{
+				"item_code": item_code,
+				"item_name": row.get("item_name") or item_code,
+				"description": description,
+				"qty": qty,
+				"uom": uom,
+				"schedule_date": schedule_date,
+				"warehouse": DEFAULT_PURCHASE_WAREHOUSE,
+				"rate": rate,
+			},
+		)
+
+	if not purchase_order.get("items"):
+		frappe.throw("没有可生成采购订单的有效需求明细")
+
+	purchase_order.insert(ignore_permissions=True)
+
+	frappe.db.set_value(
+		"OA Purchase Request",
+		doc.name,
+		{
+			"purchase_order": purchase_order.name,
+			"oa_logistics_code": oa_logistics_item_code,
+			"sync_status": "Purchase Order Created",
+		},
+	)
+	frappe.db.commit()
+
+	return {"purchase_order": purchase_order.name}
+
+
+def get_or_create_supplier(supplier_name):
+	existing_supplier = frappe.db.exists("Supplier", supplier_name) or frappe.db.get_value(
+		"Supplier",
+		{"supplier_name": supplier_name},
+		"name",
+	)
+	if existing_supplier:
+		return existing_supplier
+
+	supplier = frappe.new_doc("Supplier")
+	supplier.supplier_name = supplier_name
+	supplier.supplier_type = "Company"
+	supplier_group = get_default_supplier_group()
+	if supplier_group:
+		supplier.supplier_group = supplier_group
+	supplier.insert(ignore_permissions=True)
+	return supplier.name
+
+
+def get_default_supplier_group():
+	return frappe.db.get_value("Supplier Group", {"is_group": 0}, "name")
+
+
+def get_purchase_order_schedule_date(doc):
+	date_value = doc.get("delivery_date") or doc.get("apply_date") or nowdate()
+	if getdate(date_value) < getdate(nowdate()):
+		return nowdate()
+	return date_value
+
+
+def has_meaningful_item_row(row):
+	return row.get("item_code") or row.get("item_name")
+
+
+def get_or_create_item(row):
+	item_code = (row.get("item_code") or "").strip()
+	if not item_code:
+		item_code = f"{row.parent}-{row.idx}"
+
+	if frappe.db.exists("Item", item_code):
+		return item_code
+
+	uom = get_or_create_uom(row.get("uom"))
+	item = frappe.new_doc("Item")
+	item.item_code = item_code
+	item.item_name = row.get("item_name") or item_code
+	item.item_group = get_default_item_group()
+	item.stock_uom = uom
+	item.is_stock_item = 1
+	item.description = row.get("specification") or row.get("item_name") or item_code
+	item.insert(ignore_permissions=True)
+	return item.name
+
+
+def get_item_uom(item_code, requested_uom=None):
+	return frappe.db.get_value("Item", item_code, "stock_uom") or get_or_create_uom(requested_uom)
+
+
+def get_or_create_uom(uom):
+	uom = (uom or "").strip() or "Nos"
+	if frappe.db.exists("UOM", uom):
+		return uom
+
+	doc = frappe.new_doc("UOM")
+	doc.uom_name = uom
+	doc.enabled = 1
+	doc.insert(ignore_permissions=True)
+	return doc.name
+
+
+def get_default_item_group():
+	item_group = frappe.db.get_value("Item Group", {"is_group": 0}, "name")
+	if not item_group:
+		frappe.throw("未找到可用的物料组，无法自动创建物料")
+	return item_group
 
 
 def fill_table_from_json(doc, table_field, json_field, aliases):
