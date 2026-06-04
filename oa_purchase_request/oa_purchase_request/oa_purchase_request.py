@@ -308,7 +308,7 @@ def create_purchase_order(docname, supplier_name, oa_logistics_item_code=None, o
 		if not has_meaningful_item_row(row):
 			continue
 
-		item_code = get_or_create_item(row)
+		item_code = get_existing_item(row)
 		qty = flt(row.get("qty")) or 1
 		amount = flt(row.get("amount"))
 		rate = amount / qty if amount else 0
@@ -382,24 +382,67 @@ def has_meaningful_item_row(row):
 	return row.get("item_code") or row.get("item_name")
 
 
-def get_or_create_item(row):
+def auto_create_purchase_receipt(doc, method=None):
+	if doc.docstatus != 1 or doc.get("status") in ("Closed", "On Hold"):
+		return
+
+	if has_purchase_receipt(doc.name) or not has_receivable_items(doc):
+		return
+
+	try:
+		from erpnext.buying.doctype.purchase_order.purchase_order import make_purchase_receipt
+
+		purchase_receipt = make_purchase_receipt(doc.name)
+		if not purchase_receipt.get("items"):
+			return
+
+		purchase_receipt.insert(ignore_permissions=True)
+		frappe.msgprint(f"已自动生成采购入库单 {purchase_receipt.name}")
+	except Exception:
+		frappe.log_error(
+			title=f"Auto create Purchase Receipt failed: {doc.name}",
+			message=frappe.get_traceback(),
+		)
+		frappe.throw("自动生成采购入库单失败，请检查采购订单明细后手动创建采购入库单")
+
+
+def has_purchase_receipt(purchase_order):
+	return bool(
+		frappe.db.sql(
+			"""
+			select pri.parent
+			from `tabPurchase Receipt Item` pri
+			inner join `tabPurchase Receipt` pr on pr.name = pri.parent
+			where pri.purchase_order = %s
+				and pr.docstatus < 2
+			limit 1
+			""",
+			(purchase_order,),
+		)
+	)
+
+
+def has_receivable_items(doc):
+	has_unit_price_items = cint(doc.get("has_unit_price_items"))
+	for row in doc.get("items"):
+		if row.get("delivered_by_supplier"):
+			continue
+		if has_unit_price_items and flt(row.get("qty")) == 0:
+			return True
+		if abs(flt(row.get("received_qty"))) < abs(flt(row.get("qty"))):
+			return True
+	return False
+
+
+def get_existing_item(row):
 	item_code = (row.get("item_code") or "").strip()
 	if not item_code:
-		item_code = f"{row.parent}-{row.idx}"
+		frappe.throw(f"第 {row.idx} 行缺少物料编码，不能创建采购订单")
 
 	if frappe.db.exists("Item", item_code):
 		return item_code
 
-	uom = get_or_create_uom(row.get("uom"))
-	item = frappe.new_doc("Item")
-	item.item_code = item_code
-	item.item_name = row.get("item_name") or item_code
-	item.item_group = get_default_item_group()
-	item.stock_uom = uom
-	item.is_stock_item = 1
-	item.description = row.get("specification") or row.get("item_name") or item_code
-	item.insert(ignore_permissions=True)
-	return item.name
+	frappe.throw(f"第 {row.idx} 行物料编码不存在：{item_code}，不能创建采购订单")
 
 
 def get_item_uom(item_code, requested_uom=None):

@@ -20,4 +20,7 @@ doc_events = {
 		"on_update": "oa_purchase_request.oa_purchase_request.oa_purchase_request.sync_attachments",
 		"before_save": "oa_purchase_request.oa_purchase_request.oa_purchase_request.normalize_child_tables",
 	},
+	"Purchase Order": {
+		"on_submit": "oa_purchase_request.oa_purchase_request.oa_purchase_request.auto_create_purchase_receipt",
+	},
 }
