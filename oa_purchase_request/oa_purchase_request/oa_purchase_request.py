@@ -14,6 +14,7 @@ from frappe.utils import flt, getdate, nowdate
 
 
 DEFAULT_PURCHASE_WAREHOUSE = "采购 - YC"
+OA_PURCHASE_REQUEST_PROCESS_CODE = "PROC-BFDF6F09-4551-43B3-8C55-537AA74A241B"
 OA_LOGISTICS_PROCESS_CODE = "PROC-RIYJTXWV-CN52YRK70C5499JG0TJ03-3GSSHZQJ-5"
 
 ITEM_ALIASES = {
@@ -155,6 +156,22 @@ def inspect_attachment_payload(docname):
 	for fieldname in ("attachments_json", "raw_payload"):
 		collect_attachment_debug_rows(parse_json_value(doc.get(fieldname)), rows, fieldname)
 	return rows[:200]
+
+
+@frappe.whitelist()
+def get_oa_purchase_request_dingtalk_url(docname):
+	doc = frappe.get_doc("OA Purchase Request", docname)
+	doc.check_permission("read")
+
+	process_instance_id = (doc.get("process_instance_id") or "").strip()
+	if not process_instance_id:
+		frappe.throw("缺少 OA Purchase Request 的 process_instance_id")
+
+	process_code = (doc.get("process_code") or "").strip()
+	if process_code and process_code != OA_PURCHASE_REQUEST_PROCESS_CODE:
+		frappe.throw(f"OA Purchase Request 模板码不匹配：{process_code}")
+
+	return {"dingtalk_url": get_dingtalk_approval_url(process_instance_id)}
 
 
 @frappe.whitelist()

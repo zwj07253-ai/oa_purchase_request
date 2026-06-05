@@ -16,6 +16,7 @@ frappe.listview_settings["OA Purchase Request"] = {
 	],
 	onload(listview) {
 		patch_apply_date_range_filter(listview);
+		patch_oa_logistics_code_click(listview);
 	},
 	get_indicator(doc) {
 		if (doc.sync_status === "Purchase Order Created" || doc.purchase_order) {
@@ -34,11 +35,7 @@ frappe.listview_settings["OA Purchase Request"] = {
 				return "";
 			}
 
-			return `<a href="#" class="oa-dingtalk-link" data-oa-logistics-code="${frappe.utils.escape_html(
-				value
-			)}" onclick="return open_oa_logistics_approval(event, this);">
-				${frappe.utils.escape_html(value)}
-			</a>`;
+			return frappe.utils.escape_html(value);
 		},
 	},
 };
@@ -88,4 +85,27 @@ function patch_apply_date_range_filter(listview) {
 		return filters;
 	};
 	listview.__oa_apply_date_range_patched = true;
+}
+
+function patch_oa_logistics_code_click(listview) {
+	if (listview.__oa_logistics_code_click_patched) {
+		return;
+	}
+
+	const result = listview.$result?.[0] || listview.page?.wrapper?.[0];
+	if (!result) {
+		return;
+	}
+
+	result.addEventListener("click", (event) => {
+		if (!event.target.closest(".list-row-col.oa_logistics_code")) {
+			return;
+		}
+
+		event.preventDefault();
+		event.stopPropagation();
+		event.stopImmediatePropagation();
+		return false;
+	}, true);
+	listview.__oa_logistics_code_click_patched = true;
 }
