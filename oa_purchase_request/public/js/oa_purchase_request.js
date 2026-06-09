@@ -84,7 +84,10 @@ function show_purchase_order_dialog(frm) {
 }
 
 function can_create_purchase_order(frm) {
-	return !frm.doc.purchase_order && frm.doc.sync_status !== "Purchase Order Created";
+	return (
+		!frm.doc.purchase_order &&
+		!["Closed", "Purchase Order Created"].includes(frm.doc.sync_status)
+	);
 }
 
 function set_missing_manual_oa_code(frm) {

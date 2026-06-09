@@ -1,5 +1,11 @@
 frappe.listview_settings["OA Purchase Request"] = {
-	add_fields: ["sync_status", "purchase_order", "oa_logistics_code", "process_instance_id"],
+	add_fields: [
+		"sync_status",
+		"approval_status",
+		"purchase_order",
+		"oa_logistics_code",
+		"process_instance_id",
+	],
 	custom_filter_configs: [
 		{
 			fieldname: "apply_date_from",
@@ -15,10 +21,17 @@ frappe.listview_settings["OA Purchase Request"] = {
 		},
 	],
 	onload(listview) {
+		listview.page.add_action_item(__("关闭"), () => {
+			close_selected_oa_purchase_requests(listview);
+		});
 		patch_apply_date_range_filter(listview);
 		patch_oa_logistics_code_click(listview);
 	},
 	get_indicator(doc) {
+		if (doc.sync_status === "Closed") {
+			return [__("已关闭"), "gray", "sync_status,=,Closed"];
+		}
+
 		if (doc.sync_status === "Purchase Order Created" || doc.purchase_order) {
 			return [__("已生成采购订单"), "green", "sync_status,=,Purchase Order Created"];
 		}
@@ -39,6 +52,42 @@ frappe.listview_settings["OA Purchase Request"] = {
 		},
 	},
 };
+
+function close_selected_oa_purchase_requests(listview) {
+	const names = listview.get_checked_items(true);
+	if (!names.length) {
+		frappe.msgprint(__("请先选择要关闭的记录"));
+		return;
+	}
+
+	frappe.call({
+		method: "oa_purchase_request.oa_purchase_request.oa_purchase_request.close_oa_purchase_requests",
+		args: { names },
+		freeze: true,
+		freeze_message: __("正在关闭..."),
+		callback(response) {
+			const closed_names = response.message?.names || names;
+			const closed_count = response.message?.closed_count || closed_names.length;
+			mark_list_rows_closed(listview, closed_names);
+			frappe.show_alert({
+				message: __("已关闭 {0} 条记录", [closed_count]),
+				indicator: "gray",
+			});
+			listview.clear_checked_items();
+			listview.reload();
+		},
+	});
+}
+
+function mark_list_rows_closed(listview, names) {
+	const closed_names = new Set(names);
+	(listview.data || []).forEach((doc) => {
+		if (closed_names.has(doc.name)) {
+			doc.sync_status = "Closed";
+		}
+	});
+	listview.render();
+}
 
 window.open_oa_logistics_approval = function (event, element) {
 	event.preventDefault();

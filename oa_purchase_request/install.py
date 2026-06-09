@@ -87,7 +87,7 @@ FIELDS = [
 	("付款日期Fecha de pago", "payment_date", "Date", None),
 	("关键凭证Comprobante clave", "attachments_json", "Code", None),
 	("审批完成时间", "approval_completed_at", "Data", None),
-	("审批状态", "approval_status", "Data", None),
+	("钉钉审批状态", "approval_status", "Data", None),
 	("当前节点", "current_node", "Data", None),
 	("当前负责人", "current_approver", "Data", None),
 	("历史审批人", "approval_history", "Small Text", None),
@@ -100,7 +100,7 @@ FIELDS = [
 	("Process Code", "process_code", "Data", None),
 	("Form Name", "form_name", "Data", None),
 	("Raw Payload", "raw_payload", "Code", None),
-	("Sync Status", "sync_status", "Select", "Pending Purchase Order\nPurchase Order Created\nFailed"),
+	("Sync Status", "sync_status", "Select", "Pending Purchase Order\nPurchase Order Created\nFailed\nClosed"),
 	("Purchase Order", "purchase_order", "Link", "Purchase Order"),
 	("OA Logistics Code", "oa_logistics_code", "Data", None),
 	("Error Message", "error_message", "Small Text", None),
@@ -108,6 +108,7 @@ FIELDS = [
 
 FIELDNAMES_TO_UPDATE = {
 	"approval_completed_at",
+	"approval_status",
 	"created_time",
 	"items",
 	"payments",
@@ -119,6 +120,7 @@ FIELDNAMES_TO_UPDATE = {
 }
 
 LIST_VIEW_FIELDS = {
+	"approval_status",
 	"purchase_order",
 	"oa_logistics_code",
 }
@@ -126,7 +128,6 @@ LIST_VIEW_FIELDS = {
 HIDDEN_LEGACY_FIELDS = {
 	"attachments_json",
 	"approval_history",
-	"approval_status",
 	"currency",
 	"created_time",
 	"creator",
@@ -205,6 +206,7 @@ def create_or_update_oa_purchase_request():
 			if fieldname in HIDDEN_LEGACY_FIELDS:
 				fields_by_name[fieldname].hidden = 1
 			if fieldname in LIST_VIEW_FIELDS:
+				fields_by_name[fieldname].hidden = 0
 				fields_by_name[fieldname].in_list_view = 1
 			continue
 

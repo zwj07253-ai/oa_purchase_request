@@ -293,6 +293,9 @@ def create_purchase_order(docname, supplier_name, oa_logistics_item_code=None, o
 	if not supplier_name:
 		frappe.throw("请填写供应商")
 
+	if doc.get("sync_status") == "Closed":
+		frappe.throw("已关闭的 OA Purchase Request 不能生成采购订单")
+
 	if doc.get("purchase_order") and frappe.db.exists("Purchase Order", doc.purchase_order):
 		frappe.throw(f"已生成采购订单：{doc.purchase_order}")
 
@@ -363,6 +366,25 @@ def create_purchase_order(docname, supplier_name, oa_logistics_item_code=None, o
 	frappe.db.commit()
 
 	return {"purchase_order": purchase_order.name}
+
+
+@frappe.whitelist()
+def close_oa_purchase_requests(names):
+	if isinstance(names, str):
+		names = json.loads(names)
+
+	if not names:
+		return {"closed_count": 0, "names": []}
+
+	closed_names = []
+	for name in names:
+		doc = frappe.get_doc("OA Purchase Request", name)
+		doc.check_permission("write")
+		frappe.db.set_value("OA Purchase Request", doc.name, "sync_status", "Closed", update_modified=False)
+		closed_names.append(doc.name)
+
+	frappe.db.commit()
+	return {"closed_count": len(closed_names), "names": closed_names}
 
 
 def get_or_create_supplier(supplier_name):
